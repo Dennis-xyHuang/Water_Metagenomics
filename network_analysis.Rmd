@@ -1,0 +1,97 @@
+---
+title: "Network Analysis"
+output: 
+  github_document:
+    html_preview: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+```{r load_libraries}
+library("dplyr")
+library("readxl")
+library("igraph")
+library("ggraph")
+library("readr")
+
+sessionInfo()
+```
+
+```{r network_analysis, warning = FALSE, fig.height = 6, fig.width = 8}
+options(ggrepel.max.overlaps = Inf)
+summary_df <- read_excel("./input/network_analysis/Contig_ARG_annotation_summary.xlsx")
+filtered_summary_df <- summary_df %>% filter(ARG == "Yes")
+lineage_info <- read_csv("./input/lineage_info.csv", col_names = TRUE)
+for (colname in c("TaxPhylum", "TaxClass", "TaxOrder", "TaxFamily", "TaxGenus", "TaxSpecies")) {
+  lineage_info[[colname]] <- make.names(lineage_info[[colname]])
+}
+
+find_taxa <- function(col_cat, col_kraken) {
+  if (is.na(col_cat)) {
+    if (is.na(col_kraken)) {
+      val <- NA
+    } else {
+      val <- col_kraken
+    }
+  } else {
+    col_cat <- strsplit(col_cat, " ")[[1]][1]
+    val <- col_cat
+  }
+}
+
+AMR_genes <- unique(summary_df$AMR.Gene)
+gene_distribution_df <- data.frame(matrix(nrow = 0, ncol = 3))
+colnames(gene_distribution_df) = c("Gene", "Plasmid_Count", "Chromosome_Count")
+for (AMR_gene in AMR_genes) {
+  temp_df <- summary_df %>% filter(AMR.Gene == AMR_gene)
+  pla_count <- sum(temp_df$Contig.Origin == "Plasmid")
+  chr_count <- sum(temp_df$Contig.Origin == "Chromosome")
+  temp_list <- list("Gene" = AMR_gene, "Plasmid_Count" = pla_count, "Chromosome_Count" = chr_count)
+  gene_distribution_df <- rbind(gene_distribution_df, temp_list)
+}
+
+filtered_summary_df$Genus <- mapply(find_taxa, filtered_summary_df$CAT.Genus, filtered_summary_df$Kraken2.Genus)
+filtered_summary_df$Superkingdom <- mapply(find_taxa, filtered_summary_df$CAT.Superkingdom, filtered_summary_df$Kraken2.Superkingdom)
+filtered_summary_df <- filtered_summary_df %>% filter(!is.na(Genus)) %>% filter(Contig.Origin == "Chromosome")
+
+network_table <- table(filtered_summary_df$AMR.Gene, filtered_summary_df$Genus)
+network_data <- matrix(network_table, ncol = ncol(network_table), dimnames = dimnames(network_table))
+filtered_lineage <- lineage_info %>% filter(TaxGenus %in% colnames(network_data)) %>% distinct(TaxGenus, .keep_all = TRUE)
+genus_to_phylum <- setNames(filtered_lineage$TaxPhylum, filtered_lineage$TaxGenus)
+
+tax_res_graph <- graph.incidence(network_data, weighted = TRUE)
+V(tax_res_graph)$degree <- degree(tax_res_graph)
+V(tax_res_graph)$phylum <- genus_to_phylum[V(tax_res_graph)$name]
+
+# plot without annotation
+set.seed(2023)
+ggraph(tax_res_graph, "igraph", algorithm = "nicely") + 
+  geom_edge_link0(aes(width = weight), edge_alpha = 0.3, color = "grey30") + 
+  geom_node_point(aes(color = phylum, size = degree, shape = type)) + 
+  scale_edge_width_continuous(name = "Weights", breaks = c(1, 10, 100), trans = "log10", range = c(0.5, 3)) +
+  scale_size_continuous(name = "Degree", breaks = c(1, 10, 20, 40), range = c(1.5, 10)) +
+  scale_color_manual(name = "Phylum", values = c("#fc8d62", "#66c2a5", "#8da0cb", "#e78ac3", "#a6d854", "#ffd92f"), 
+                     na.value = "grey50", 
+                     breaks = c("Actinomycetota", "Bacillota", "Bacteroidota", "Campylobacterota", 
+                                "Fusobacteriota", "Pseudomonadota")) +
+  scale_shape_manual(name = "Type", values = setNames(c(16, 1), c(TRUE, FALSE)), labels = c("Genus", "AMR Genes")) +
+  ggforce::theme_no_axes()
+
+# plot with full annotations
+set.seed(2023)
+ggraph(tax_res_graph, "igraph", algorithm = "nicely") + 
+  geom_edge_link0(aes(width = weight), edge_alpha = 0.3, color = "grey30") + 
+  geom_node_point(aes(color = phylum, size = degree, shape = type)) + 
+  geom_node_text(aes(label = name, size = degree), color = 'black', size = 2, repel = TRUE) +
+  scale_edge_width_continuous(name = "Weights", breaks = c(1, 10, 100), trans = "log10", range = c(0.5, 3)) +
+  scale_size_continuous(name = "Degree", breaks = c(1, 10, 20, 40), range = c(1.5, 10)) +
+  scale_color_manual(name = "Phylum", values = c("#fc8d62", "#66c2a5", "#8da0cb", "#e78ac3", "#a6d854", "#ffd92f"), 
+                     na.value = "grey50", 
+                     breaks = c("Actinomycetota", "Bacillota", "Bacteroidota", "Campylobacterota", 
+                                "Fusobacteriota", "Pseudomonadota")) +
+  scale_shape_manual(name = "Type", values = setNames(c(16, 1), c(TRUE, FALSE)), labels = setNames(c("Genus", "AMR Genes"), c(TRUE, FALSE))) +
+  ggforce::theme_no_axes()
+```
+

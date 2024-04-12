@@ -1,0 +1,121 @@
+---
+title: "Metagenome Assembled Genomes"
+output: 
+  github_document:
+    html_preview: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE)
+```
+
+```{r load_libraries}
+library("dplyr")
+library("ggtree")
+library("tidytree")
+library("stringr")
+library("ggtreeExtra")
+library("ggnewscale")
+library("ggplot2")
+library("colorspace")
+library("tibble")
+library("ape")
+library("ggpubr")
+
+sessionInfo()
+```
+
+```{r MAGs_plot, fig.keep = 2, fig.height = 10, fig.width = 13}
+GTDB_bac_tree <- read.tree("./input/metagenome_assembled_genomes/FastTree_bacteria.tree")
+GTDB_bac_info <- read.csv("./input/metagenome_assembled_genomes/gtdbtk.bac120.summary.tsv", sep = "\t")
+GTDB_arc_info <- read.csv("./input/metagenome_assembled_genomes/gtdbtk.ar53.summary.tsv", sep = "\t")
+
+extract_taxonomic_level <- function(string, prefix) {
+  taxonomy_ranks <- strsplit(string, ";")[[1]]
+  target <- taxonomy_ranks[startsWith(taxonomy_ranks, prefix)]
+  target <- str_replace(target, prefix, "")
+  if (grepl("_", target)) {
+    target <- paste(strsplit(target, "_")[[1]][1], strsplit(target, "_")[[1]][2])
+  } # avoid "Bacillota_A", etc.
+  return(target)
+}
+
+GTDB_bac_info <- GTDB_bac_info %>% 
+  select(user_genome, classification) %>%
+  mutate(Superkingdom = sapply(classification, extract_taxonomic_level, "d__")) %>%
+  mutate(Phylum = sapply(classification, extract_taxonomic_level, "p__")) %>%
+  mutate(Class = sapply(classification, extract_taxonomic_level, "c__")) %>%
+  mutate(Order = sapply(classification, extract_taxonomic_level, "o__")) %>%
+  mutate(Family = sapply(classification, extract_taxonomic_level, "f__")) %>%
+  mutate(Genus = sapply(classification, extract_taxonomic_level, "g__")) %>%
+  mutate(Species = sapply(classification, extract_taxonomic_level, "s__")) %>%
+  mutate(InDB = ifelse(Species == "", "No", "Yes"))
+
+family_vector <- c()
+for (family_name in unique(GTDB_bac_info$Family)) {
+  n_in <- nrow(GTDB_bac_info %>% filter(Family == family_name) %>% filter(InDB == "Yes"))
+  n_out <- nrow(GTDB_bac_info %>% filter(Family == family_name) %>% filter(InDB == "No"))
+  family_vector <- setNames(c(family_vector, n_out), c(names(family_vector), family_name))
+}
+
+genus_vector <- c()
+for (genus_name in unique(GTDB_bac_info$Genus)) {
+  n_in <- nrow(GTDB_bac_info %>% filter(Genus == genus_name) %>% filter(InDB == "Yes"))
+  n_out <- nrow(GTDB_bac_info %>% filter(Genus == genus_name) %>% filter(InDB == "No"))
+  genus_vector <- setNames(c(genus_vector, n_out), c(names(genus_vector), genus_name))
+}
+
+GTDB_arc_info <- GTDB_arc_info %>% 
+  select(user_genome, classification) %>%
+  mutate(Superkingdom = sapply(classification, extract_taxonomic_level, "d__")) %>%
+  mutate(Phylum = sapply(classification, extract_taxonomic_level, "p__")) %>%
+  mutate(Class = sapply(classification, extract_taxonomic_level, "c__")) %>%
+  mutate(Order = sapply(classification, extract_taxonomic_level, "o__")) %>%
+  mutate(Family = sapply(classification, extract_taxonomic_level, "f__")) %>%
+  mutate(Genus = sapply(classification, extract_taxonomic_level, "g__")) %>%
+  mutate(Species = sapply(classification, extract_taxonomic_level, "s__"))
+
+phylo_tbl <- as_tibble(GTDB_bac_tree)
+phylum_colors <- setNames(qualitative_hcl(length(unique(GTDB_bac_info$Phylum))), sort(unique(GTDB_bac_info$Phylum)))
+info_tree <- as.treedata(left_join(phylo_tbl, GTDB_bac_info, by = c("label" = "user_genome")))
+circular_tree <- ggtree(info_tree, layout = "circular",  size = 0.1) +
+  xlim(c(-3, NA))
+circular_tree
+
+meta_phylum_df <- GTDB_bac_info %>% select(user_genome, Phylum) %>% column_to_rownames("user_genome")
+intermediate_tree <- gheatmap(circular_tree, meta_phylum_df,
+                              offset = 0, width = 0.1, colnames = FALSE, color = NA) +
+  scale_fill_manual("Phylum", values = phylum_colors, 
+                    guide = guide_legend(ncol = 1, override.aes = list(colour = "black")))
+#intermediate_tree
+
+meta_novelty_df <- GTDB_bac_info %>% select(user_genome, InDB) %>% column_to_rownames("user_genome")
+final_tree <- intermediate_tree + new_scale_fill()
+final_tree <- gheatmap(final_tree, meta_novelty_df, offset = 0.32, width = 0.1, colnames = FALSE, color = NA) +
+  scale_fill_manual("MAGs", values = setNames(c("grey80", "grey20"), c("Yes", "No")), breaks = c("Yes", "No"),
+                    labels = setNames(c("Known MAG", "Unknown MAG"), c("Yes", "No")), guide = guide_legend(ncol = 1)) +
+  theme(legend.position = "left")
+
+unique_phylums <- unique(GTDB_bac_info$Phylum)
+total_branch_len <- sum(GTDB_bac_tree$edge.length)
+added_branch_len_list <- list()
+for (phylum in unique_phylums) {
+  novalspp_removed_phylo <- drop.tip(GTDB_bac_tree, GTDB_bac_info %>% filter(Phylum == phylum) %>% filter(InDB == "No") %>% pull(user_genome))
+  added_branch_len <- total_branch_len - sum(novalspp_removed_phylo$edge.length)
+  added_branch_len_list[[phylum]] <- added_branch_len
+}
+added_branch_len_df <- aggregate(values~ind, stack(added_branch_len_list), toString) %>% rename("Phylum" = "ind", "Branch.Length" = "values")
+added_branch_len_df$Branch.Length <- as.numeric(added_branch_len_df$Branch.Length)
+added_branch_len_df$Phylum <- factor(added_branch_len_df$Phylum, levels = sort(unique_phylums, decreasing = TRUE))
+added_branch_len_df$NMAGs <- sapply(added_branch_len_df$Phylum, function(x){nrow(GTDB_bac_info %>% filter(Phylum == x))})
+added_branch_len_df$label <- paste0(added_branch_len_df$Phylum, " (n = ", added_branch_len_df$NMAGs, ")")
+phylum_colplot <- ggplot(added_branch_len_df) + 
+  geom_bar(aes(y = Phylum, x = Branch.Length, fill = Phylum), stat = "identity") + 
+  scale_y_discrete(labels = setNames(added_branch_len_df$label, added_branch_len_df$Phylum)) +
+  scale_x_continuous("Increased Branch Length") +
+  scale_fill_manual(values = phylum_colors, guide = "none") +
+  theme_pubclean(base_size = 15)
+
+ggarrange(final_tree, phylum_colplot, widths = c(2, 1))
+```
+
